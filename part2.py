@@ -1,124 +1,162 @@
 import csv
 from collections import Counter
 import numpy as np
+from typing import Iterable, List, Tuple
+import os
 
-# --- 1. Alignment Helper Classes ---
+# ==========================================
+# 1. YOUR PROVIDED CODE (Infrastructure)
+# ==========================================
 
-class WordEditWeights:
-    """
-    Defines the cost for edit operations.
-    Standard WER calculation uses:
-    - Match = 0
-    - Substitution / Insertion / Deletion = 1
-    """
-    def __init__(self):
-        self.match_cost = 0
-        self.substitution_cost = 1
-        self.insertion_cost = 1
-        self.deletion_cost = 1
+class EditWeights:
+    """Abstract base class for edit weights."""
+    def pair_weight(self, first_obj, second_obj) -> float: pass
+    def insertion_weight(self, obj) -> float: pass
+    def deletion_weight(self, obj) -> float: pass
 
-def align_sequences(ref_tokens, hyp_tokens):
+def align_sequences(first_seq: Iterable, second_seq: Iterable, weights: EditWeights) -> Tuple[float, List[Tuple]]:
     """
-    Implements the Needleman-Wunsch algorithm to align two lists of words.
-    Returns a list of tuples: [(ref_word, hyp_word), ...]
+    Your provided global alignment function.
+    Returns: (score, aligned_pairs)
     """
-    n = len(ref_tokens)
-    m = len(hyp_tokens)
-    weights = WordEditWeights()
-    
-    # Initialize Distance Matrix
-    # dp[i][j] stores the minimum edit distance between ref[:i] and hyp[:j]
-    dp = np.zeros((n + 1, m + 1))
-    
-    # Initialize first column (Deletions) and first row (Insertions)
-    for i in range(n + 1):
-        dp[i][0] = i * weights.deletion_cost
-    for j in range(m + 1):
-        dp[0][j] = j * weights.insertion_cost
-        
-    # Fill the matrix
-    for i in range(1, n + 1):
-        for j in range(1, m + 1):
-            ref_w = ref_tokens[i-1]
-            hyp_w = hyp_tokens[j-1]
-            
-            # Calculate costs
-            cost_match = dp[i-1][j-1] + (0 if ref_w == hyp_w else weights.substitution_cost)
-            cost_del = dp[i-1][j] + weights.deletion_cost
-            cost_ins = dp[i][j-1] + weights.insertion_cost
-            
-            dp[i][j] = min(cost_match, cost_del, cost_ins)
-            
-    # Backtracking to find the alignment path
-    alignment = []
-    i, j = n, m
-    
+    _OP_NULL = 0
+    _OP_PAIR = 1
+    _OP_INS = 2
+    _OP_DEL = 3
+
+    first_len = len(first_seq)
+    second_len = len(second_seq)
+
+    scores_mat = np.zeros((first_len + 1, second_len + 1))
+    ops_mat = np.zeros((first_len + 1, second_len + 1), dtype=np.int8)
+
+    scores_mat[0, 0] = 0
+    ops_mat[0, 0] = _OP_NULL
+
+    j = 1
+    for second_obj in second_seq:
+        ins_wgt = scores_mat[0, j - 1] + weights.insertion_weight(second_obj)
+        scores_mat[0, j] = ins_wgt
+        ops_mat[0, j] = _OP_INS
+        j += 1
+
+    i = 1
+    for first_obj in first_seq:
+        del_wgt = scores_mat[i - 1, 0] + weights.deletion_weight(first_obj)
+        scores_mat[i, 0] = del_wgt
+        ops_mat[i, 0] = _OP_DEL
+
+        j = 1
+        for second_obj in second_seq:
+            max_wgt = scores_mat[i - 1, j - 1] + weights.pair_weight(first_obj, second_obj)
+            best_op = _OP_PAIR
+
+            ins_wgt = scores_mat[i, j - 1] + weights.insertion_weight(second_obj)
+            if ins_wgt > max_wgt:
+                max_wgt = ins_wgt
+                best_op = _OP_INS
+
+            del_wgt = scores_mat[i - 1, j] + weights.deletion_weight(first_obj)
+            if del_wgt > max_wgt:
+                max_wgt = del_wgt
+                best_op = _OP_DEL
+
+            scores_mat[i, j] = max_wgt
+            ops_mat[i, j] = best_op
+            j += 1
+        i += 1
+
+    aligned_pairs = []
+    i = first_len
+    j = second_len
+
     while i > 0 or j > 0:
-        ref_w = ref_tokens[i-1] if i > 0 else None
-        hyp_w = hyp_tokens[j-1] if j > 0 else None
-        
-        current_score = dp[i][j]
-        
-        # Determine which operation led to the current score
-        # Priority: Match/Sub -> Delete -> Insert
-        
-        # Check for Match or Substitution
-        if i > 0 and j > 0 and (current_score == dp[i-1][j-1] + (0 if ref_w == hyp_w else weights.substitution_cost)):
-            alignment.append((ref_w, hyp_w))
-            i -= 1
+        curr_op = ops_mat[i, j]
+        if curr_op == _OP_PAIR:
+            i -= 1; j -= 1
+            aligned_pairs.append((first_seq[i], second_seq[j]))
+        elif curr_op == _OP_INS:
             j -= 1
-        # Check for Deletion (Word in Ref missing in Hyp)
-        elif i > 0 and (current_score == dp[i-1][j] + weights.deletion_cost):
-            alignment.append((ref_w, "")) 
+            aligned_pairs.append((None, second_seq[j]))
+        elif curr_op == _OP_DEL:
             i -= 1
-        # Check for Insertion (Word in Hyp not in Ref)
+            aligned_pairs.append((first_seq[i], None))
         else:
-            alignment.append(("", hyp_w))
-            j -= 1
-            
-    return list(reversed(alignment))
+            break
 
-# --- 2. AccuracyStatistics Class (The Core Logic) ---
+    aligned_pairs.reverse()
+    return scores_mat[first_len, second_len], aligned_pairs
+
+
+# ==========================================
+# 2. IMPLEMENTATION FOR PART B
+# ==========================================
+
+class WordLevelEditWeights(EditWeights):
+    """
+    Defines weights for WER calculation.
+    We treat it as 'Score Maximization':
+    - Match: 0
+    - Error (Sub/Ins/Del): -1
+    Resulting Score = -(Number of Errors)
+    """
+    def pair_weight(self, a, b):
+        return 0 if a == b else -1
+
+    def insertion_weight(self, obj):
+        return -1
+
+    def deletion_weight(self, obj):
+        return -1
 
 class AccuracyStatistics:
+    """
+        Let us denote:
+        NGT     - number of ground-truth words,
+        NASR    - number of transcription words,
+        M       - the number of matching words,
+        S       - the number of substitutions,
+        I       - the number of inserted words,
+        D       - the number of deleted words.
+
+    """
     def __init__(self):
-        # Counters
         self.n_gt = 0    # Total words in Reference
         self.n_asr = 0   # Total words in ASR Output
-        self.hits = 0    # M (Matches)
-        self.subs = 0    # S (Substitutions)
-        self.ins = 0     # I (Insertions)
-        self.dels = 0    # D (Deletions)
-        
-        # Error tracking for "Frequent Errors" analysis
+        self.hits = 0    # M
+        self.subs = 0    # S 
+        self.ins = 0     # I
+        self.dels = 0    # D 
         self.errors = Counter()
 
     def add_alignment(self, alignment):
         """
-        Takes an alignment list [(ref, hyp), ...] and updates statistics.
+        Parses the alignment output from your function.
+        Format is: (ref_word, hyp_word) where either can be None.
         """
         for ref_w, hyp_w in alignment:
-            # Update word counts
-            if ref_w and ref_w != "": self.n_gt += 1
-            if hyp_w and hyp_w != "": self.n_asr += 1
+            # Update Total Counts
+            if ref_w is not None: self.n_gt += 1
+            if hyp_w is not None: self.n_asr += 1
             
-            # Classify the pair
-            if ref_w == hyp_w:
-                self.hits += 1 # Match
-            elif ref_w != "" and hyp_w != "":
-                self.subs += 1 # Substitution
-                self.errors[(ref_w, hyp_w)] += 1
-            elif ref_w != "" and hyp_w == "":
-                self.dels += 1 # Deletion
+            # Classification Logic
+            if ref_w is not None and hyp_w is not None:
+                if ref_w == hyp_w:
+                    self.hits += 1  # Match
+                else:
+                    self.subs += 1  # Substitution
+                    self.errors[(ref_w, hyp_w)] += 1
+            
+            elif ref_w is not None and hyp_w is None:
+                self.dels += 1      # Deletion
                 self.errors[(ref_w, "<Deleted>")] += 1
-            elif ref_w == "" and hyp_w != "":
-                self.ins += 1  # Insertion
+                
+            elif ref_w is None and hyp_w is not None:
+                self.ins += 1       # Insertion
                 self.errors[("<Inserted>", hyp_w)] += 1
 
     def __iadd__(self, other):
-        """
-        Overloads the += operator to aggregate statistics from multiple files.
-        """
+        """Allow summing stats: global_stats += file_stats"""
         self.n_gt += other.n_gt
         self.n_asr += other.n_asr
         self.hits += other.hits
@@ -128,54 +166,50 @@ class AccuracyStatistics:
         self.errors.update(other.errors)
         return self
 
-    # --- Properties for Metrics ---
-    
+    # --- Metrics Properties ---
     @property
     def wer(self):
-        # WER = (S + D + I) / N_gt
         if self.n_gt == 0: return 0.0
         return (self.subs + self.dels + self.ins) / self.n_gt
 
     @property
     def precision(self):
-        # Precision = Matches / N_asr
         if self.n_asr == 0: return 0.0
         return self.hits / self.n_asr
 
     @property
     def recall(self):
-        # Recall = Matches / N_gt
         if self.n_gt == 0: return 0.0
         return self.hits / self.n_gt
 
     @property
     def f1_score(self):
-        # F1 = 2 * (Prec * Rec) / (Prec + Rec)
         p = self.precision
         r = self.recall
         if (p + r) == 0: return 0.0
         return 2 * (p * r) / (p + r)
 
     def frequent_errors(self, n=10):
-        """Returns the top n most frequent errors."""
         return self.errors.most_common(n)
 
-# --- 3. Main Processing Function ---
+# ==========================================
+# 3. MAIN EXECUTION
+# ==========================================
 
 def process_results_part_b(input_file, output_file):
     print(f"Reading from: {input_file}")
-    print(f"Writing to:   {output_file}")
     
+    # Initialize our weights class
+    weights = WordLevelEditWeights()
     global_stats = AccuracyStatistics()
     
     try:
         with open(input_file, 'r', encoding='utf-8') as f_in, \
              open(output_file, 'w', encoding='utf-8', newline='') as f_out:
             
-            # Read input file
             reader = csv.DictReader(f_in, delimiter='\t')
             
-            # Prepare output file
+            # Define Output Columns
             fieldnames = ['Filename', 'N_gt', 'N_asr', '#M', '#S', '#I', '#D', 
                           'WER', 'Recall', 'Precision', 'F1-Score']
             writer = csv.DictWriter(f_out, fieldnames=fieldnames, delimiter='\t')
@@ -183,26 +217,26 @@ def process_results_part_b(input_file, output_file):
             
             count = 0
             for row in reader:
-                # 1. Get Text
                 filename = row['Filename']
                 ref_text = row.get('Reference Text', '').strip()
                 hyp_text = row.get('Transcribed Text', '').strip()
                 
-                # 2. Tokenize (Split by space)
+                # Tokenize (Split by space)
                 ref_tokens = ref_text.split()
                 hyp_tokens = hyp_text.split()
                 
-                # 3. Align
-                alignment = align_sequences(ref_tokens, hyp_tokens)
+                # --- USE YOUR ALIGNMENT FUNCTION ---
+                # We ignore the score ([0]) and take the alignment list ([1])
+                _, alignment = align_sequences(ref_tokens, hyp_tokens, weights)
                 
-                # 4. Calculate Stats for this file
+                # Calculate Stats
                 file_stats = AccuracyStatistics()
                 file_stats.add_alignment(alignment)
                 
-                # 5. Add to Global Stats
+                # Add to Global
                 global_stats += file_stats
                 
-                # 6. Write Row
+                # Write Row
                 writer.writerow({
                     'Filename': filename,
                     'N_gt': file_stats.n_gt,
@@ -218,9 +252,7 @@ def process_results_part_b(input_file, output_file):
                 })
                 count += 1
             
-            print(f"Processed {count} files.")
-
-            # --- Write TOTAL Row ---
+            # Write TOTAL Row
             writer.writerow({
                 'Filename': 'TOTAL',
                 'N_gt': global_stats.n_gt,
@@ -235,18 +267,17 @@ def process_results_part_b(input_file, output_file):
                 'F1-Score': f"{global_stats.f1_score:.4f}"
             })
             
+        print(f"Done! Processed {count} files.")
+        print(f"Results written to {output_file}")
+
         print("\n=== Top 10 Frequent Errors ===")
         for (ref, hyp), freq in global_stats.frequent_errors(10):
             print(f'-> "{ref}" replaced by "{hyp}" : {freq} times.')
             
     except FileNotFoundError:
-        print(f"Error: Could not find {input_file}. Did you run Part A?")
-    except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"Error: Could not find {input_file}. Please run Part A first.")
 
 if __name__ == "__main__":
-    # Ensure this input filename matches what you generated in Part A
     INPUT_FILE = "results_part_a.tsv"
     OUTPUT_FILE = "results_part_b.tsv"
-    
     process_results_part_b(INPUT_FILE, OUTPUT_FILE)
