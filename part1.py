@@ -6,14 +6,17 @@ from tqdm import tqdm
 # --- CONFIGURATION ---
 # UPDATE THIS PATH if necessary
 DATASET_PATH = r"C:\Users\Maya\OneDrive\Desktop\Masters\asr_final_proj\cv-corpus-24.0-2025-12-05-he.tar\cv-corpus-24.0-2025-12-05\he"
-CLIPS_FOLDER = os.path.join(DATASET_PATH, "clips")
-INPUT_TEST_TSV = os.path.join(DATASET_PATH, "test.tsv")
+# CLIPS_FOLDER = os.path.join(DATASET_PATH, "clips")
+CLIPS_FOLDER = 'noisy_clips'
+INPUT_TEST_TSV = os.path.join(DATASET_PATH, "test_noisy.tsv")
 
-OUTPUT_FILE = "results_part_a.tsv"
+OUTPUT_FILE = "results_part_a_noisy_clips.tsv"
 MODEL_ID = "ivrit-ai/whisper-large-v3-turbo-ct2"
 
 def clean_filename(filename):
     """Removes extension: 'file.mp3' -> 'file'"""
+    """Removes extension: 'file.wav' -> 'file'"""
+
     return os.path.splitext(os.path.basename(filename))[0]
 
 def get_processed_files(output_file):
