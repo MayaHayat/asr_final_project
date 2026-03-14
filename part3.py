@@ -375,4 +375,4 @@ def process_results_part_c(input_file, output_file):
         print(f"Error: Could not find {input_file}. Run Part A first.")
 
 if __name__ == "__main__":
-    process_results_part_c("results_part_a.tsv", "results_part_c.tsv")
+    process_results_part_c("results_part_a_noisy_clips.tsv", "results_part_c_noisy_clips.tsv")
